@@ -1,0 +1,113 @@
+const TelegramBot = require('node-telegram-bot-api');
+const fs = require('fs');
+
+const TOKEN = process.env.TOKEN;
+const bot = new TelegramBot(TOKEN, { polling: true });
+
+const FILE = "data.json";
+
+const START = 16*60 + 20;
+const END = 22*60 + 40;
+const STEP = 20;
+
+function toTime(m){
+  let h=Math.floor(m/60);
+  let min=m%60;
+  return `${h}:${min.toString().padStart(2,'0')}`;
+}
+
+function toMin(t){
+  let [h,m]=t.split(":").map(Number);
+  return h*60+m;
+}
+
+function generateSlots(){
+  let arr=[];
+  for(let t=START;t<=END;t+=STEP){
+    arr.push(toTime(t));
+  }
+  return arr;
+}
+
+function readData(){
+  if (!fs.existsSync(FILE)) return { slots: [] };
+  return JSON.parse(fs.readFileSync(FILE));
+}
+
+function writeData(data){
+  fs.writeFileSync(FILE, JSON.stringify(data,null,2));
+}
+
+function travelTime(a,b){
+  if(a===b) return 0;
+  if((a==="SUD" && b==="EST")||(a==="EST"&&b==="SUD")) return 20;
+  if((a==="SUD" && b==="OUEST")||(a==="OUEST"&&b==="SUD")) return 40;
+  if((a==="EST" && b==="OUEST")||(a==="OUEST"&&b==="EST")) return 20;
+}
+
+function isValid(newZone,newTime,data){
+  let newMin = toMin(newTime);
+
+  for(let s of data.slots){
+    let existingMin = toMin(s.time);
+    let diff = Math.abs(newMin - existingMin);
+    let needed = travelTime(newZone, s.zone);
+
+    if(diff < needed) return false;
+  }
+
+  return true;
+}
+
+let userState = {};
+
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(msg.chat.id, "👋 Bienvenue ! Choisis ta zone :", {
+    reply_markup: {
+      keyboard: [["SUD","EST","OUEST"]],
+      resize_keyboard: true
+    }
+  });
+});
+
+bot.on('message', (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+
+  if(["SUD","EST","OUEST"].includes(text)){
+    userState[chatId] = { zone: text };
+
+    let data = readData();
+    let slots = generateSlots();
+
+    let validSlots = slots.filter(t => isValid(text, t, data));
+
+    if(validSlots.length === 0){
+      return bot.sendMessage(chatId,"❌ Plus aucun créneau dispo aujourd'hui");
+    }
+
+    bot.sendMessage(chatId, "⏱️ Créneaux disponibles :", {
+      reply_markup: {
+        keyboard: validSlots.map(s => [s]),
+        resize_keyboard: true
+      }
+    });
+    return;
+  }
+
+  if(userState[chatId] && text.includes(':')){
+    let zone = userState[chatId].zone;
+    let time = text;
+
+    let data = readData();
+
+    if(!isValid(zone,time,data)){
+      return bot.sendMessage(chatId,"❌ Créneau impossible (conflit trajet)");
+    }
+
+    data.slots.push({zone,time});
+    writeData(data);
+
+    bot.sendMessage(chatId, `✅ Confirmé !\n📍 Zone : ${zone}\n⏱️ Heure : ${time}`);
+  }
+});
